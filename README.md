@@ -522,31 +522,31 @@ assignment/
 ├── README.md
 ├── RESULTS.md
 ├── .gitignore
-├── agent/                       # 任务级代理（纯 Python，不依赖 Webots）
+├── agent/                       
 │   ├── main.py                  # CLI 入口
-│   ├── task_agent.py            # Plan->Validate->Execute->Recover 闭环
+│   ├── task_agent.py            # 整体流程控制
 │   ├── models.py                # SkillCall, SkillResult, ExecutionFeedback 等
 │   ├── registry.py              # 机器可读技能注册表 + JSON Schema
-│   ├── validator.py             # 白名单 / Schema / 工作空间 / 步数限制
+│   ├── validator.py             # 用于验证是否符合要求（白名单/Schema/工作空间/步数限制）
 │   ├── executor.py              # 调用 robot_skills
 │   ├── planner.py               # 模拟规划器（MockPlanner）和可选 LLMPlanner
-│   ├── recovery.py              # 有界恢复策略
-│   └── logger.py                # JSONL 事件日志
+│   ├── recovery.py              # 有上限的恢复策略
+│   └── logger.py                # JSONL事件日志
 ├── tests/
-│   └── test_task_agent.py       # 闭环代理离线测试
-├── ros2_ws/src/robot_skills/    # ROS 2 Python 技能包
+│   └── test_task_agent.py       # 在没有Planner的情况下的整体测试
+├── ros2_ws/src/robot_skills/    # Python技能包
 │   ├── package.xml
 │   ├── setup.py
 │   └── robot_skills/
 │       ├── skills.py            # RobotSkills 节点与技能实现
-│       ├── navigate_to.py       # CLI 封装
-│       ├── follow_waypoints.py  # CLI 封装
-│       └── stop_skill.py        # CLI 封装
+│       ├── navigate_to.py       # CLI的封装
+│       ├── follow_waypoints.py  # CLI的封装
+│       └── stop_skill.py        # CLI的封装
 ├── docs/
 │   ├── architecture.md          # 架构图与数据流
 │   ├── environment.md           # WSL2 / Webots / ROS 2 环境配置说明
 │   └── report_materials.md      # 技术报告原始材料
-└── logs/                        # 示例 JSONL 执行日志
+└── logs/                        # 示例 JSONL日志
     ├── success_storage.jsonl
     ├── success_visit.jsonl
     ├── failure_invalid_location.jsonl
