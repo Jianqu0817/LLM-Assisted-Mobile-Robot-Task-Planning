@@ -6,97 +6,7 @@
 
 ---
 
-## 1. 系统概览
-
-系统包含四层：
-
-```text
-自然语言请求
-        │
-        ▼
-规划器 Planner（mock 或 OpenAI 兼容 LLM）
-        │ 原始计划 raw plan
-        ▼
-验证器 Validator（白名单、Schema、工作空间、步数限制）
-        │ 通过验证的调用
-        ▼
-技能执行器 Skill Executor（navigate_to, follow_waypoints, stop）
-        │ ROS 2 话题
-        ▼
-Webots + ROS 2（RoboMaster agent0）
-        │ 结构化结果
-        ▼
-恢复 Recovery（重试 / 后退避障 / 有界重规划 / 停止）
-        │
-        └── ExecutionFeedback ──► Planner（重新规划）
-        │
-        ▼
-JSONL 日志
-```
-
-已实现的技能：
-
-1. `navigate_to(x, y, theta)` — 全向位置控制 + 最终航向对齐，带位置/航向容差与安全超时。
-2. `follow_waypoints(waypoints)` — 依次访问一组航点，失败时报告最后到达的航点下标。
-3. `stop()` — 发布零速度，并返回结构化结果。
-
-每个技能至少返回：
-
-```json
-{
-  "success": true,
-  "reason": "reached",
-  "elapsed_time_s": 7.81,
-  "position_error_m": 0.049,
-  "heading_error_rad": 0.000003
-}
-```
-
----
-
-## 2. 仓库结构
-
-```text
-assignment/
-├── README.md
-├── RESULTS.md
-├── .gitignore
-├── agent/                       # 任务级代理（纯 Python，不依赖 Webots）
-│   ├── main.py                  # CLI 入口
-│   ├── task_agent.py            # Plan->Validate->Execute->Recover 闭环
-│   ├── models.py                # SkillCall, SkillResult, ExecutionFeedback 等
-│   ├── registry.py              # 机器可读技能注册表 + JSON Schema
-│   ├── validator.py             # 白名单 / Schema / 工作空间 / 步数限制
-│   ├── executor.py              # 调用 robot_skills
-│   ├── planner.py               # MockPlanner 和可选 LLMPlanner
-│   ├── recovery.py              # 有界恢复策略
-│   └── logger.py                # JSONL 事件日志
-├── tests/
-│   └── test_task_agent.py       # 闭环代理离线测试
-├── ros2_ws/src/robot_skills/    # ROS 2 Python 技能包
-│   ├── package.xml
-│   ├── setup.py
-│   └── robot_skills/
-│       ├── skills.py            # RobotSkills 节点与技能实现
-│       ├── navigate_to.py       # CLI 封装
-│       ├── follow_waypoints.py  # CLI 封装
-│       └── stop_skill.py        # CLI 封装
-├── docs/
-│   ├── architecture.md          # 架构图与数据流
-│   ├── environment.md           # WSL2 / Webots / ROS 2 环境配置说明
-│   └── report_materials.md      # 技术报告原始材料
-└── logs/                        # 示例 JSONL 执行日志
-    ├── success_storage.jsonl
-    ├── success_visit.jsonl
-    ├── failure_invalid_location.jsonl
-    ├── failure_unknown_skill.jsonl
-    └── failure_timeout.jsonl
-```
-
----
-
-## 3. 环境配置
-
+## 1. 环境配置与 Setup
 参考环境：
 
 | 组件 | 版本 |
@@ -172,8 +82,9 @@ bash scripts/stop_robomaster.sh
 
 ---
 
-## 4. 启动仿真
+---
 
+## 2. 启动仿真
 > **默认模式：** Webots R2025a 在 WSL2 内运行，路径 `/usr/local/webots`，通过 WSLg 显示。
 > 环境文件会设置 `WEBOTS_HOME=/usr/local/webots`。可选 Windows 原生模式见 3.3 节。
 
@@ -205,6 +116,9 @@ ros2 launch webots_ros2_robomaster robot_launch.py
 /imu                    sensor_msgs/msg/Imu
 ```
 
+---
+
+## 3. 键盘操作
 手动键盘遥控（可选）：
 
 ```bash
@@ -220,8 +134,9 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r cmd_vel:=/age
 
 ---
 
-## 5. 运行任务级代理
+---
 
+## 4. 运行任务级代理（LLM）
 代理可以使用确定性的 mock 规划器（无需 API key），也可以使用 OpenAI 兼容规划器。
 
 ```bash
@@ -300,8 +215,100 @@ python3 -m agent.main "Go to storage." --planner llm --log logs/llm_success.json
 
 ---
 
-## 6. 基于地图的 A* 导航
+---
 
+## 5. 系统概览
+系统包含四层：
+
+```text
+自然语言请求
+        │
+        ▼
+规划器 Planner（mock 或 OpenAI 兼容 LLM）
+        │ 原始计划 raw plan
+        ▼
+验证器 Validator（白名单、Schema、工作空间、步数限制）
+        │ 通过验证的调用
+        ▼
+技能执行器 Skill Executor（navigate_to, follow_waypoints, stop）
+        │ ROS 2 话题
+        ▼
+Webots + ROS 2（RoboMaster agent0）
+        │ 结构化结果
+        ▼
+恢复 Recovery（重试 / 后退避障 / 有界重规划 / 停止）
+        │
+        └── ExecutionFeedback ──► Planner（重新规划）
+        │
+        ▼
+JSONL 日志
+```
+
+已实现的技能：
+
+1. `navigate_to(x, y, theta)` — 全向位置控制 + 最终航向对齐，带位置/航向容差与安全超时。
+2. `follow_waypoints(waypoints)` — 依次访问一组航点，失败时报告最后到达的航点下标。
+3. `stop()` — 发布零速度，并返回结构化结果。
+
+每个技能至少返回：
+
+```json
+{
+  "success": true,
+  "reason": "reached",
+  "elapsed_time_s": 7.81,
+  "position_error_m": 0.049,
+  "heading_error_rad": 0.000003
+}
+```
+
+---
+
+---
+
+## 6. 仓库结构
+```text
+assignment/
+├── README.md
+├── RESULTS.md
+├── .gitignore
+├── agent/                       # 任务级代理（纯 Python，不依赖 Webots）
+│   ├── main.py                  # CLI 入口
+│   ├── task_agent.py            # Plan->Validate->Execute->Recover 闭环
+│   ├── models.py                # SkillCall, SkillResult, ExecutionFeedback 等
+│   ├── registry.py              # 机器可读技能注册表 + JSON Schema
+│   ├── validator.py             # 白名单 / Schema / 工作空间 / 步数限制
+│   ├── executor.py              # 调用 robot_skills
+│   ├── planner.py               # MockPlanner 和可选 LLMPlanner
+│   ├── recovery.py              # 有界恢复策略
+│   └── logger.py                # JSONL 事件日志
+├── tests/
+│   └── test_task_agent.py       # 闭环代理离线测试
+├── ros2_ws/src/robot_skills/    # ROS 2 Python 技能包
+│   ├── package.xml
+│   ├── setup.py
+│   └── robot_skills/
+│       ├── skills.py            # RobotSkills 节点与技能实现
+│       ├── navigate_to.py       # CLI 封装
+│       ├── follow_waypoints.py  # CLI 封装
+│       └── stop_skill.py        # CLI 封装
+├── docs/
+│   ├── architecture.md          # 架构图与数据流
+│   ├── environment.md           # WSL2 / Webots / ROS 2 环境配置说明
+│   └── report_materials.md      # 技术报告原始材料
+└── logs/                        # 示例 JSONL 执行日志
+    ├── success_storage.jsonl
+    ├── success_visit.jsonl
+    ├── failure_invalid_location.jsonl
+    ├── failure_unknown_skill.jsonl
+    └── failure_timeout.jsonl
+```
+
+---
+
+---
+
+## 7. 基于地图的 A* 导航
 可以使用真实 GPS、罗盘航向和 `/scan` 建立 2D 占据栅格地图：
 
 ```bash
@@ -383,8 +390,9 @@ ros2 run robot_skills stop_skill
 
 ---
 
-## 7. 验证与安全
+---
 
+## 8. 验证与安全
 验证器实现六层检查：
 
 1. 计划长度与最大步数；
@@ -408,8 +416,9 @@ LLM 从不被允许生成 Python、Shell 或 ROS 命令。执行器只把三个�
 
 ---
 
-## 8. 结果
+---
 
+## 9. 结果
 完整测试表见 `RESULTS.md`。摘要：
 
 | 测试 | 结果 |
@@ -424,8 +433,9 @@ LLM 从不被允许生成 Python、Shell 或 ROS 命令。执行器只把三个�
 
 ---
 
-## 9. 已知限制
+---
 
+## 10. 已知限制
 - 默认配置在 WSL2 内通过 WSLg 运行 Webots，存在一定的 D3D12 转换和 Xwayland 合成开销，流畅度不如可选的 Windows 原生 Webots 模式，但足以完成作业。
 - 参考 `wheels_controller` 使用 `WHEEL_RADIUS = 0.26`，而 URDF 轮半径为 `0.06`；技能控制器使用反馈补偿。
 - 参考环境没有 `/agent0/odom` 话题；位置来自 `/agent0/gps`，航向来自 `/agent0/compass/bearing`。
@@ -434,8 +444,9 @@ LLM 从不被允许生成 Python、Shell 或 ROS 命令。执行器只把三个�
 
 ---
 
-## 10. 参考链接
+---
 
+## 11. 参考链接
 1. ROS 2 Humble — https://docs.ros.org/en/humble/
 2. Webots R2025a — https://cyberbotics.com/
 3. `webots_ros2` — https://github.com/cyberbotics/webots_ros2
