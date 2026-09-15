@@ -1,0 +1,4 @@
+{"timestamp": 1789394641.6466255, "event": "raw_plan", "request": "Go to space_station.", "plan": [{"skill": "navigate_to", "arguments": {"x": 999.0, "y": 999.0, "theta": 0.0}}]}
+{"timestamp": 1789394641.6487994, "event": "validation", "ok": false, "reason": "target_out_of_workspace", "details": {"x": 999.0, "y": 999.0, "call_index": 0}}
+{"timestamp": 1789394641.6543384, "event": "recovery_decision", "action": "abort", "message": "The requested location is outside the configured workspace. Please choose a valid location such as entrance, storage, workbench, or charging_station."}
+{"timestamp": 1789394641.6590283, "event": "final_outcome", "success": false, "reason": "target_out_of_workspace", "message": "The requested location is outside the configured workspace. Please choose a valid location such as entrance, storage, workbench, or charging_station."}

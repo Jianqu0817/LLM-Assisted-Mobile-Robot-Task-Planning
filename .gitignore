@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.venv/
+venv/
+
+# ROS 2 / colcon build artifacts
+build/
+install/
+log/
+logs/*.log
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Webots / large generated artifacts
+*.wbproj.bak
+
+# Keep example JSONL logs under assignment/logs/*.jsonl, so do not ignore them.
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+report/*.aux
+report/*.log
+report/*.out

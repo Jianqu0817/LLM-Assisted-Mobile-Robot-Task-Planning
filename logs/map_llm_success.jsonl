@@ -1,0 +1,4 @@
+{"timestamp": 1789407024.580949, "event": "raw_plan", "request": "Go to storage.", "plan": [{"skill": "navigate_to", "arguments": {"x": 0, "y": -0.9, "theta": 0}}]}
+{"timestamp": 1789407024.5838351, "event": "validation", "ok": true, "reason": "plan_valid", "details": {"steps": 1}}
+{"timestamp": 1789407053.392184, "event": "skill_result", "call": {"skill": "navigate_to", "arguments": {"x": 0, "y": -0.9, "theta": 0}}, "result": {"success": true, "reason": "map_reached", "elapsed_time_s": 28.80269135100002, "position_error_m": null, "heading_error_rad": null, "last_reached_index": 0, "total_waypoints": 1}}
+{"timestamp": 1789407053.3939989, "event": "final_outcome", "success": true, "reason": "all_skills_completed"}

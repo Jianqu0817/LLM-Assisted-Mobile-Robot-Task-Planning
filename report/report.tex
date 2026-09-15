@@ -1,0 +1,382 @@
+\documentclass[10pt,twocolumn]{article}
+\usepackage[margin=0.72in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{caption}
+\captionsetup{font=small,labelfont=bf}
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible
+}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue,citecolor=blue}
+
+\title{\vspace{-1.2em}LLM-Assisted Mobile Robot Task Planning with a Validated Skill Interface and Execution Feedback}
+\author{Candidate\small Interview Assignment}
+\date{\vspace{-0.8em}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report presents a single mobile-robot system that converts natural-language
+instructions into a small, validated sequence of high-level robot skills. The
+system runs ROS~2 Humble and Webots~R2025a inside WSL2 on a Windows host.
+A task-level planner selects only from a fixed allowlist of three skills; a
+multi-layer validator checks every proposed call before execution; and a
+bounded recovery module observes each structured result and decides between
+retry, obstacle recovery, one-shot LLM replanning with execution feedback, and
+safe stop-and-report. Experiments show successful pose reaching with a
+position error of 0.049\,m, multi-waypoint execution, safe rejection of
+invalid and unknown-skill plans, and a closed-loop replanning trace in which
+the LLM receives the observed timeout and produces a new validated plan.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+Large language models (LLMs) can translate natural language into structured
+tool calls, but directly executing their output on a robot is unsafe. The
+assignment requires that an LLM may \emph{select} existing high-level skills
+but must never issue velocity commands or execute generated code. The design
+goals are reliability, explicit skill contracts, strict validation, and
+reproducible experiments.
+
+The proposed system follows the loop
+\texttt{Plan} $\rightarrow$ \texttt{Validate} $\rightarrow$
+\texttt{Execute} $\rightarrow$ \texttt{Observe} $\rightarrow$
+\texttt{Recover}. The main contributions are:
+\begin{itemize}
+  \item a validated skill interface with a fixed allowlist and JSON Schema
+        contracts;
+  \item a ROS~2 implementation of \texttt{navigate\_to},
+        \texttt{follow\_waypoints}, and \texttt{stop};
+  \item a closed-loop task agent (\texttt{TaskAgent}) that centralizes
+        planning, validation, execution, observation, and recovery;
+  \item a mock planner and an optional OpenAI-compatible LLM planner that can
+        consume structured execution feedback for bounded replanning;
+  \item bounded recovery for invalid locations, unknown skills, timeouts, and
+        blocked obstacles;
+  \item a reproducible WSL2/Webots setup with JSONL execution logs.
+\end{itemize}
+
+\section{System Architecture}
+\label{sec:arch}
+Figure~\ref{fig:arch} shows the architecture. The planner produces a raw plan
+(\texttt{SkillCall[]}). The validator checks the plan before any robot action.
+Only validated calls reach the skill executor, which invokes the
+\texttt{RobotSkills} ROS~2 node. The node publishes velocity commands and reads
+position/heading/scan feedback from Webots. Every skill returns a structured
+\texttt{SkillResult}; on failure, the recovery module decides whether to retry,
+back up and retry, replan with \texttt{ExecutionFeedback}, or stop and report.
+All events are appended to a JSONL log.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{figures/architecture_feedback.png}
+  \caption{Closed-loop system architecture. The dashed edge is the execution
+  feedback channel used by the LLM planner for bounded replanning.}
+  \label{fig:arch}
+\end{figure}
+
+\subsection{Modules}
+The repository separates the task-level agent from the ROS~2 skill layer:
+\begin{itemize}
+  \item \texttt{agent/task\_agent.py}: owns the Plan--Validate--Execute--
+        Observe--Recover loop;
+  \item \texttt{agent/planner.py}: mock planner and optional LLM planner;
+  \item \texttt{agent/registry.py}: machine-readable skill registry;
+  \item \texttt{agent/validator.py}: six-layer validation;
+  \item \texttt{agent/executor.py}: fixed dispatch to the three skills;
+  \item \texttt{agent/recovery.py}: bounded recovery decisions;
+  \item \texttt{agent/models.py}: \texttt{SkillCall},
+        \texttt{SkillResult}, \texttt{ValidationResult}, and
+        \texttt{ExecutionFeedback};
+  \item \texttt{agent/logger.py}: JSONL event logging;
+  \item \texttt{robot\_skills/skills.py}: ROS~2 implementation of the skills.
+\end{itemize}
+
+\subsection{Skill interface}
+Table~\ref{tab:skills} summarises the three skills. The registry is the single
+source of truth: it generates both the JSON Schema used by the validator and
+the tool list exposed to the LLM.
+
+\begin{table}[t]
+\centering
+\caption{Skill interface summary.}
+\label{tab:skills}
+\small
+\begin{tabular}{p{0.22\linewidth}p{0.68\linewidth}}
+\toprule
+Skill & Contract \\
+\midrule
+\texttt{navigate\_to} &
+params: $x,y,\theta$; success: position $\le 0.05$\,m and heading
+$\le 0.10$\,rad; timeout: 30\,s \\
+\texttt{follow\_waypoints} &
+params: a list of waypoints; on failure returns the last reached index;
+timeout: 30\,s per waypoint \\
+\texttt{stop} &
+publishes zero velocity; success: zero command published; timeout: 2\,s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Implementation}
+\label{sec:impl}
+
+\subsection{ROS~2 skill layer}
+The \texttt{RobotSkills} node subscribes to \texttt{/agent0/gps}
+(\texttt{PointStamped}) for position and to \texttt{/agent0/compass/bearing}
+(\texttt{FloatStamped}) for heading. It publishes \texttt{Twist} messages on
+\texttt{/agent0/cmd\_vel}. The Webots compass bearing is clockwise-positive,
+while ROS yaw is counter-clockwise-positive, so the node computes
+\begin{equation}
+  \psi = \mathrm{normalize}(-\mathrm{radians}(\mathrm{bearing})).
+\end{equation}
+
+\subsection{Holonomic \texttt{navigate\_to} with PID}
+The RoboMaster base is holonomic. Rather than rotating first and then driving,
+the controller translates directly in the body frame and only rotates in place
+for the final heading:
+\begin{align}
+  e_x &= x_d - x, \qquad e_y = y_d - y, \\
+  v_x^{w} &= \mathrm{clamp}\big(k_p e_x + k_i \textstyle\int e_x dt + k_d \tfrac{d e_x}{dt}, -v_{\max}, v_{\max}\big), \\
+  v_y^{w} &= \mathrm{clamp}\big(k_p e_y + k_i \textstyle\int e_y dt + k_d \tfrac{d e_y}{dt}, -v_{\max}, v_{\max}\big), \\
+  v_x^{b} &= \cos\psi\, v_x^{w} + \sin\psi\, v_y^{w}, \\
+  v_y^{b} &= -\sin\psi\, v_x^{w} + \cos\psi\, v_y^{w}.
+\end{align}
+When the position error is above tolerance, the node commands
+$(v_x^{b}, v_y^{b}, 0)$; otherwise it commands $(0,0,\omega)$ with
+$\omega = \mathrm{clamp}\big(k_p^\theta e_\theta + k_i^\theta \textstyle\int e_\theta dt + k_d^\theta \tfrac{d e_\theta}{dt}, -\omega_{\max}, \omega_{\max}\big)$.
+Success requires
+\begin{equation}
+  \sqrt{e_x^2+e_y^2} \le 0.05\,\mathrm{m}
+  \quad\text{and}\quad |e_\theta| \le 0.10\,\mathrm{rad}.
+\end{equation}
+On timeout the node stops the robot and returns
+\texttt{success=false, reason="timeout"}.
+
+\subsection{\texttt{follow\_waypoints} and \texttt{stop}}
+\texttt{follow\_waypoints} calls \texttt{navigate\_to} sequentially and tracks
+\texttt{last\_reached\_index}. If a waypoint fails, it stops and returns that
+index. \texttt{stop} publishes zero velocity and returns a structured result.
+
+\subsection{Obstacle safety layer}
+\texttt{navigate\_to} also subscribes to \texttt{/scan}. Before publishing a
+translation command, it checks the minimum valid range inside a 30-degree cone
+around the intended body-frame motion direction. If that distance is at most
+0.35\,m, the skill stops and returns
+\texttt{success=false, reason="obstacle\_blocked"}. The task-level recovery
+then backs up, rotates, and retries once.
+
+\subsection{Closed-loop task agent}
+\texttt{TaskAgent} owns the execution loop. It first asks the planner for a
+plan and logs the raw plan. The validator checks the plan and rejects it
+before any motion if it is invalid. For each validated call, the executor
+invokes the corresponding skill and logs the observed \texttt{SkillResult}.
+Successful calls are recorded and execution continues. For a failure, the
+\texttt{RecoveryManager} chooses a bounded action:
+\begin{itemize}
+  \item \texttt{retry}: re-run the same call once after a timeout;
+  \item \texttt{backup\_and\_retry}: back up, rotate, and re-run the call once
+        after an obstacle-blocked result;
+  \item \texttt{replan}: send \texttt{ExecutionFeedback} to the LLM planner and
+        request a new plan (only when the planner supports feedback and the
+        replan budget remains);
+  \item \texttt{stop\_and\_report}: stop the robot and return the failure.
+\end{itemize}
+A replanned plan is validated from scratch before any robot motion. If the
+planner returns the same plan, the agent stops safely instead of looping. The
+number of replans is bounded by \texttt{--max-replans} (default~1).
+
+\subsection{Validation layers}
+The validator applies six layers: plan length, fixed allowlist, JSON Schema,
+workspace bounds, preconditions, and retry/replan limits. The allowable
+workspace is $x,y \in [-1.5,1.5]$\,m. Table~\ref{tab:validation} lists the
+layers and the corresponding failure reasons.
+
+\begin{table}[t]
+\centering
+\caption{Validator layers and produced reasons.}
+\label{tab:validation}
+\small
+\begin{tabular}{p{0.40\linewidth}p{0.52\linewidth}}
+\toprule
+Layer & Failure reason \\
+\midrule
+Plan length & \texttt{too\_many\_steps} \\
+Allowlist & \texttt{unknown\_skill} \\
+JSON Schema & \texttt{schema\_invalid} \\
+Workspace bounds & \texttt{target\_out\_of\_workspace} \\
+Preconditions & \texttt{precondition\_failed} \\
+Retry/replan limit & \texttt{stop\_and\_report} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Experiments and Results}
+\label{sec:exp}
+
+\subsection{Platform}
+Experiments were run on Windows~11 with WSL2 Ubuntu~22.04, ROS~2 Humble, and
+Webots~R2025a. The GPU is an AMD Radeon RX~9070~XT (16\,GB). WSLg exposes a
+hardware-accelerated OpenGL~4.2 context backed by the Mesa D3D12 driver:
+\texttt{glxinfo} reports renderer \texttt{D3D12 (AMD Radeon RX 9070 XT)} and
+\texttt{Accelerated: yes}; \texttt{glxgears} reaches approximately 140\,FPS.
+
+\subsection{Task-level regression}
+Table~\ref{tab:results} reports the full regression after the closed-loop
+refactor. The success case reaches storage with a position error of
+0.0494\,m. The multi-waypoint case reaches both waypoints and reports
+\texttt{last\_reached\_index=1}. The invalid location is rejected at the
+workspace layer for the mock planner; for the real LLM, the model returns an
+empty tool list, which the validator rejects before execution. The unknown
+skill is rejected at the allowlist layer. The forced timeout is retried once
+and then safely stopped and reported. The obstacle-recovery case succeeds after
+one back-up-and-rotate retry, while the persistent-obstacle case stops and
+reports the target as blocked. The optional cloud LLM planner was tested with
+an OpenAI-compatible endpoint and model gpt-5.5; it produced correct
+\texttt{navigate\_to} and \texttt{follow\_waypoints} plus \texttt{stop} plans.
+
+The key new result is R12. The LLM first plans to the charging station. After
+two forced timeout observations, the recovery layer sends the structured
+\texttt{ExecutionFeedback} back to the LLM. The LLM returns a new validated
+plan that navigates to storage instead; the new plan is executed and, because
+the timeout is still forced to one second, it is safely stopped and reported.
+The JSONL trace therefore contains the full sequence
+\texttt{raw\_plan} $\rightarrow$ \texttt{skill\_result} $\rightarrow$
+\texttt{recovery\_decision} $\rightarrow$ \texttt{feedback\_to\_planner}
+$\rightarrow$ \texttt{replanned\_plan} $\rightarrow$
+\texttt{validation} $\rightarrow$ \texttt{skill\_result} $\rightarrow$
+\texttt{final\_outcome}.
+
+\begin{table*}[t]
+\centering
+\caption{Task-level regression results with the closed-loop agent.}
+\label{tab:results}
+\small
+\begin{tabular}{llcccl}
+\toprule
+ID & Instruction & Planner / mode & Outcome & Skill calls & Recovery \\
+\midrule
+R1 & Go to storage. & mock / direct & success, 18.58\,s, 0.0494\,m & 1 & none \\
+R2 & Visit storage, then workbench, and stop. & mock / direct & success, 38.27\,s & 2 & none \\
+R3 & Go to storage. & mock / map (A*) & success, 17.73\,s, \texttt{map\_reached} & 1 & none \\
+R4 & Go to space\_station. & mock & rejected & 0 & abort, \texttt{target\_out\_of\_workspace} \\
+R5 & Go to entrance and fly. & mock & rejected & 0 & abort, \texttt{unknown\_skill} \\
+R6 & Go to charging\_station, forced 1\,s timeout & mock / direct & failed & 2 & retry once, stop and report \\
+R7 & Go to storage, obstacle then removed & mock / direct & success, 0.0500\,m & 2 & back up, rotate, retry once \\
+R8 & Go to storage, obstacle remains & mock / direct & failed & 2 & back up, rotate, stop and report \\
+R9 & Go to storage. & real LLM / direct & success, 16.43\,s, 0.0499\,m & 1 & none \\
+R10 & Visit storage, then workbench, and stop. & real LLM / direct & success, 38.70\,s & 2 & none \\
+R11 & Go to space\_station. & real LLM & rejected & 0 & LLM empty plan, abort \\
+R12 & Go to charging\_station, forced 1\,s timeout & real LLM / direct & failed & 4 & retry, \textbf{replan with feedback}, retry, stop \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Manual control and calibration}
+Table~\ref{tab:calib} shows the observed response of the reference
+\texttt{wheels\_controller}. The controller uses an incorrect wheel-radius
+constant (0.26 instead of the URDF value 0.06), so the skill layer uses
+closed-loop feedback rather than open-loop timing.
+
+\begin{table}[t]
+\centering
+\caption{Observed command response.}
+\label{tab:calib}
+\small
+\begin{tabular}{lcc}
+\toprule
+Command & Observed motion & Approx. response \\
+\midrule
+\texttt{linear.x = 1.0} & 0.20\,m in 2\,s & 0.10\,m/s \\
+\texttt{linear.y = 1.0} & 0.22\,m in 2\,s & 0.11\,m/s \\
+\texttt{angular.z = 5.0} & 127$^\circ$ in 2\,s & 1.11\,rad/s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Safety}
+The LLM never receives direct actuation authority. It can only select from
+three allowlisted skills, and every proposed call passes through the validator
+before execution. The executor maps skill names to Python methods with
+predefined signatures; no generated Python, shell, or ROS command is executed.
+Targets outside the workspace, unknown skills, malformed arguments, plans that
+exceed the step limit, and empty plans are rejected. A timeout or blocked
+obstacle always ends with a zero velocity command and a structured failure
+report.
+
+\subsection{Execution feedback}
+The refactored agent makes execution feedback explicit and bounded. The LLM
+sees only task-level information: the original request, the failed call, the
+structured result, the attempted recovery message, and already completed work.
+It never sees raw sensor data. The feedback path is rule-triggered, so the
+system remains deterministic and testable with a mock planner while still
+supporting a real LLM comparison.
+
+\subsection{Reproducibility}
+The system is reproducible from the repository and the environment notes in
+\texttt{docs/environment.md}. The setup requires ROS~2 Humble, Webots~R2025a,
+the \texttt{webots\_ros2} 2025.0.0 packages, and the reference
+\texttt{webots\_ros2\_robomaster} world assets. The Webots asset cache and the
+reference \texttt{protos/meshes} directory are documented because they are
+large external assets. The generated JSONL logs are committed as examples.
+
+\subsection{Limitations}
+The final configuration runs Webots inside WSL2 through WSLg. The WSLg path has
+some D3D12 translation and Xwayland compositing overhead, so it is less
+responsive than the optional native Windows Webots mode, but it is sufficient
+for the assignment. The reference setup has no \texttt{/agent0/odom} topic;
+the skill layer therefore uses \texttt{/agent0/gps} for position and
+\texttt{/agent0/compass/bearing} for heading. The reference
+\texttt{wheels\_controller} uses an incorrect wheel radius, so closed-loop
+control is required. The current LLM replanning is one-shot and rule-triggered;
+it does not yet compare the original plan with the replanned plan beyond
+detecting identical plans.
+
+\subsection{Next steps}
+Future work includes an LLM planner that reasons over the full execution trace
+and explicit failure semantics, dynamic obstacle avoidance using
+\texttt{/scan}, a dedicated odometry topic, and a Docker/WSL one-click setup.
+
+\section{Conclusion}
+\label{sec:conclusion}
+This report described a reliable, validated LLM-assisted task-planning system
+for a simulated mobile robot. The system separates planning, validation,
+execution, observation, and recovery; enforces a strict allowlist; returns
+structured results for every skill; and closes the loop by sending bounded
+execution feedback back to the LLM planner. Experiments demonstrated successful
+pose reaching, multi-waypoint execution, map-based A* navigation, rejection of
+invalid locations and unknown skills, obstacle recovery, and a real LLM
+replanning trace after observed timeouts.
+
+\begin{thebibliography}{9}
+\bibitem{ros2}
+ROS~2 Humble documentation. \url{https://docs.ros.org/en/humble/}
+\bibitem{webots}
+Cyberbotics Webots. \url{https://cyberbotics.com/}
+\bibitem{webotsros2}
+\texttt{webots\_ros2}. \url{https://github.com/cyberbotics/webots_ros2}
+\bibitem{robomaster}
+\texttt{webots\_ros2\_robomaster}.
+\url{https://github.com/MohismLab/webots_ros2_robomaster}
+\bibitem{wslg}
+Microsoft WSLg. \url{https://github.com/microsoft/wslg}
+\bibitem{mesa}
+Mesa D3D12 driver. \url{https://docs.mesa3d.org/drivers/d3d12.html}
+\bibitem{openai}
+OpenAI-compatible function calling.
+\url{https://platform.openai.com/docs/guides/function-calling}
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,4 @@
+{"timestamp": 1789411051.615962, "event": "raw_plan", "request": "Go to space_station.", "plan": []}
+{"timestamp": 1789411051.6182153, "event": "validation", "ok": false, "reason": "empty_plan", "details": {}}
+{"timestamp": 1789411051.6227279, "event": "recovery_decision", "action": "abort", "message": "Plan rejected by validator: empty_plan"}
+{"timestamp": 1789411051.6265898, "event": "final_outcome", "success": false, "reason": "empty_plan", "message": "Plan rejected by validator: empty_plan"}
