@@ -1,5 +1,3 @@
-> English version: [README_en.md](README_en.md)
-
 # LLM 辅助移动机器人任务规划
 
 本仓库实现了面试作业 *LLM-Assisted Mobile Robot Task Planning*，
