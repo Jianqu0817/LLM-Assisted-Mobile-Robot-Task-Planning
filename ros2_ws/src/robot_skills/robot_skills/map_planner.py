@@ -12,6 +12,13 @@ import math
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
+try:
+    import numpy as np
+    from scipy.ndimage import distance_transform_edt
+except Exception:
+    np = None
+    distance_transform_edt = None
+
 Cell = Tuple[int, int]
 Waypoint = Tuple[float, float, float]
 
@@ -76,6 +83,20 @@ class MapPlanner:
         self.yaml_path = Path(yaml_path)
         self.width, self.height, self.data = _read_pgm(self.pgm_path)
         self.resolution, self.origin_x, self.origin_y = _parse_yaml(self.yaml_path)
+        # Cells closer than this to an obstacle are treated as non-traversable
+        # by A*, so the planner does not route the robot through narrow gaps
+        # that are physically too small.
+        self.min_traversable_clearance_px = max(2, int(round(0.15 / self.resolution)))
+        self._dist_to_obs = None
+        if distance_transform_edt is not None:
+            try:
+                grid = np.frombuffer(self.data, dtype=np.uint8).reshape(
+                    self.height, self.width
+                )
+                free_mask = grid == FREE_VALUE
+                self._dist_to_obs = distance_transform_edt(free_mask)
+            except Exception:
+                self._dist_to_obs = None
 
     def value(self, col: int, row: int) -> int:
         if not (0 <= col < self.width and 0 <= row < self.height):
@@ -87,6 +108,14 @@ class MapPlanner:
 
     def is_unknown(self, col: int, row: int) -> bool:
         return self.value(col, row) == UNKNOWN_VALUE
+
+    def clearance_px(self, col: int, row: int) -> float:
+        """Distance from a free cell to the nearest obstacle, in pixels."""
+        if self._dist_to_obs is None:
+            return 0.0
+        if not (0 <= col < self.width and 0 <= row < self.height):
+            return 0.0
+        return float(self._dist_to_obs[row, col])
 
     def world_to_grid(self, x: float, y: float) -> Cell:
         col = int(round((x - self.origin_x) / self.resolution))
@@ -145,6 +174,18 @@ class MapPlanner:
                 return False
         return True
 
+    def _line_clear(self, c0: int, r0: int, c1: int, r1: int) -> bool:
+        """Line is free and keeps a small clearance from obstacles."""
+        cells = self._bresenham(c0, r0, c1, r1)
+        for index, (c, r) in enumerate(cells):
+            if index == 0 or index == len(cells) - 1:
+                continue
+            if not self.is_free(c, r):
+                return False
+            if self.clearance_px(c, r) < self.min_traversable_clearance_px:
+                return False
+        return True
+
     def plan_cells(self, start_xy, goal_xy) -> Optional[List[Cell]]:
         start = self.world_to_grid(*start_xy)
         goal = self.world_to_grid(*goal_xy)
@@ -184,7 +225,18 @@ class MapPlanner:
                 if not self.is_free(nc, nr):
                     if neighbor != goal:
                         continue
-                tentative = g_score[current] + move_cost
+                if neighbor != goal:
+                    if self.clearance_px(nc, nr) < self.min_traversable_clearance_px:
+                        continue
+                step_cost = move_cost
+                clearance = self.clearance_px(nc, nr)
+                if clearance > 0.0:
+                    # Penalize cells close to walls so A* prefers the
+                    # center of narrow corridors.
+                    step_cost = move_cost * (
+                        1.0 + 3.0 * math.exp(-clearance / 5.0)
+                    )
+                tentative = g_score[current] + step_cost
                 if tentative < g_score.get(neighbor, float("inf")):
                     came_from[neighbor] = current
                     g_score[neighbor] = tentative
@@ -200,7 +252,7 @@ class MapPlanner:
         while i < len(cells) - 1:
             j = len(cells) - 1
             while j > i + 1:
-                if self._line_free(*cells[i], *cells[j]):
+                if self._line_clear(*cells[i], *cells[j]):
                     break
                 j -= 1
             simplified.append(cells[j])

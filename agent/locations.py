@@ -11,7 +11,7 @@ WORKSPACE_MIN_Y = -4.0
 WORKSPACE_MAX_Y = 7.0
 
 LOCATIONS: Dict[str, Location] = {
-    "entrance": Location("entrance", 0.0, 2.0, 0.0),
+    "entrance": Location("entrance", 0.0, 3.0, 0.0),
     "storage": Location("storage", -2.152373937677039, -1.363206790893182, 0.0),
     "workbench": Location("workbench", 4.8, 0.0, 0.0),
     "charging_station": Location("charging_station", -2.17, 1.95, 0.0),

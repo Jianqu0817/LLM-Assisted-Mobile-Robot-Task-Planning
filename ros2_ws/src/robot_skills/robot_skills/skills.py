@@ -78,8 +78,8 @@ class RobotSkills(Node):
         self.declare_parameter("heading_tol_rad", 0.15)
         self.declare_parameter("timeout_s", 30.0)
         self.declare_parameter("control_rate_hz", 20.0)
-        self.declare_parameter("v_max", 3.0)
-        self.declare_parameter("omega_max", 8.0)
+        self.declare_parameter("v_max", 2.25)
+        self.declare_parameter("omega_max", 6.0)
         self.declare_parameter("k_v", 4.0)
         self.declare_parameter("k_i_v", 0.6)
         self.declare_parameter("k_d_v", 0.1)
@@ -89,15 +89,24 @@ class RobotSkills(Node):
         self.declare_parameter("integral_max_v", 0.5)
         self.declare_parameter("integral_max_theta", 0.5)
         self.declare_parameter("rotate_in_place_threshold", 0.5)
-        self.declare_parameter("obstacle_stop_distance", 0.35)
+        self.declare_parameter("obstacle_stop_distance", 0.15)
         self.declare_parameter("obstacle_cone_deg", 30.0)
         self.declare_parameter("scan_timeout_s", 1.0)
+        self.declare_parameter("side_clearance_cone_rad", 0.35)
+        self.declare_parameter("wall_clearance_threshold", 0.30)
+        self.declare_parameter("wall_repulsion_gain", 1.0)
+        self.declare_parameter("wall_repulsion_max", 0.30)
+        self.declare_parameter("wall_speed_clearance", 0.60)
+        self.declare_parameter("wall_min_speed_scale", 0.25)
+        self.declare_parameter("min_gap_width_m", 0.45)
+        self.declare_parameter("gap_check_distance_m", 1.5)
+        self.declare_parameter("gap_free_range_m", 0.8)
         self.declare_parameter("use_map", True)
         self.declare_parameter(
             "map_path",
             os.environ.get(
                 "ROBOT_MAP_PATH",
-                "/mnt/d/DS_workspace/Liqingbiao/assignment/maps/break_room_world_map.pgm",
+                "/mnt/d/DS_workspace/Liqingbiao/assignment/maps/break_room_supervisor_map.pgm",
             ),
         )
 
@@ -125,6 +134,33 @@ class RobotSkills(Node):
             float(self.get_parameter("obstacle_cone_deg").value)
         )
         self.scan_timeout_s = float(self.get_parameter("scan_timeout_s").value)
+        self.side_clearance_cone_rad = float(
+            self.get_parameter("side_clearance_cone_rad").value
+        )
+        self.wall_clearance_threshold = float(
+            self.get_parameter("wall_clearance_threshold").value
+        )
+        self.wall_repulsion_gain = float(
+            self.get_parameter("wall_repulsion_gain").value
+        )
+        self.wall_repulsion_max = float(
+            self.get_parameter("wall_repulsion_max").value
+        )
+        self.wall_speed_clearance = float(
+            self.get_parameter("wall_speed_clearance").value
+        )
+        self.wall_min_speed_scale = float(
+            self.get_parameter("wall_min_speed_scale").value
+        )
+        self.min_gap_width_m = float(
+            self.get_parameter("min_gap_width_m").value
+        )
+        self.gap_check_distance_m = float(
+            self.get_parameter("gap_check_distance_m").value
+        )
+        self.gap_free_range_m = float(
+            self.get_parameter("gap_free_range_m").value
+        )
         self.use_map = bool(self.get_parameter("use_map").value)
         self.map_path = str(self.get_parameter("map_path").value)
         self.map_planner = None
@@ -231,6 +267,90 @@ class RobotSkills(Node):
                     best = distance
             angle += increment
         return best <= self.obstacle_stop_distance
+
+    def _min_clearance_in_cone(
+        self, direction_rad: float, cone_rad: float
+    ) -> Optional[float]:
+        """Return the nearest valid scan range in a body-frame cone."""
+        if self.scan is None:
+            return None
+        if time.monotonic() - self._last_scan_time > self.scan_timeout_s:
+            return None
+        scan = self.scan
+        if not scan.ranges:
+            return None
+        best = float("inf")
+        angle = scan.angle_min
+        increment = scan.angle_increment
+        for distance in scan.ranges:
+            if math.isfinite(distance) and scan.range_min < distance < scan.range_max:
+                diff = normalize_angle(angle - direction_rad)
+                if abs(diff) <= cone_rad and distance < best:
+                    best = distance
+            angle += increment
+        if best == float("inf"):
+            return None
+        return float(best)
+
+    def _side_clearances(self) -> Tuple[Optional[float], Optional[float]]:
+        """Return (left, right) clearances in body frame."""
+        left = self._min_clearance_in_cone(
+            math.pi / 2.0, self.side_clearance_cone_rad
+        )
+        right = self._min_clearance_in_cone(
+            -math.pi / 2.0, self.side_clearance_cone_rad
+        )
+        return left, right
+
+    def _free_gap_width_around(self, direction_rad: float) -> Optional[float]:
+        """Estimate the free gap width around the desired motion direction.
+
+        Returns None when no narrow gap is detected in front.  Returns the
+        estimated gap width in meters otherwise.
+        """
+        if self.scan is None:
+            return None
+        if time.monotonic() - self._last_scan_time > self.scan_timeout_s:
+            return None
+        scan = self.scan
+        if not scan.ranges:
+            return None
+
+        blocked_angles = []
+        angle = scan.angle_min
+        increment = scan.angle_increment
+        for distance in scan.ranges:
+            if not (math.isfinite(distance) and scan.range_min < distance < scan.range_max):
+                angle += increment
+                continue
+            diff = normalize_angle(angle - direction_rad)
+            if abs(diff) <= 1.2:
+                # A ray is considered "blocked" if it is shorter than the
+                # free-range threshold; such rays delimit the gap.
+                if distance < self.gap_free_range_m:
+                    blocked_angles.append(diff)
+            angle += increment
+
+        if not blocked_angles:
+            return None
+
+        blocked_angles.sort()
+        left = max((a for a in blocked_angles if a <= 0.0), default=-1.2)
+        right = min((a for a in blocked_angles if a >= 0.0), default=1.2)
+        width_rad = max(0.0, right - left)
+
+        forward = self._min_clearance_in_cone(direction_rad, 0.10)
+        if forward is None or forward > self.gap_check_distance_m:
+            return None
+
+        gap_width_m = 2.0 * forward * math.tan(width_rad / 2.0)
+        return float(gap_width_m)
+
+    def _is_gap_too_narrow(self, direction_rad: float) -> bool:
+        gap = self._free_gap_width_around(direction_rad)
+        if gap is None:
+            return False
+        return gap < self.min_gap_width_m
 
     def recover_from_obstacle(
         self,
@@ -477,7 +597,53 @@ class RobotSkills(Node):
                 vx_body = cos_yaw * vx_world + sin_yaw * vy_world
                 vy_body = -sin_yaw * vx_world + cos_yaw * vy_world
 
+                # General wall/obstacle avoidance: if either side is too
+                # close, push the robot away and slow it down. This applies
+                # all the time, not only in narrow channels.
+                left_clearance, right_clearance = self._side_clearances()
+                repulsion = 0.0
+                min_side = None
+                if left_clearance is not None and right_clearance is not None:
+                    min_side = min(left_clearance, right_clearance)
+                    if left_clearance < self.wall_clearance_threshold:
+                        # Left wall too close -> move right (-y body).
+                        repulsion -= self.wall_repulsion_gain * (
+                            self.wall_clearance_threshold - left_clearance
+                        )
+                    if right_clearance < self.wall_clearance_threshold:
+                        # Right wall too close -> move left (+y body).
+                        repulsion += self.wall_repulsion_gain * (
+                            self.wall_clearance_threshold - right_clearance
+                        )
+                    repulsion = clamp(
+                        repulsion,
+                        -self.wall_repulsion_max,
+                        self.wall_repulsion_max,
+                    )
+                    vy_body += repulsion
+
+                    if min_side < self.wall_clearance_threshold:
+                        speed_scale = clamp(
+                            min_side / self.wall_speed_clearance,
+                            self.wall_min_speed_scale,
+                            1.0,
+                        )
+                        vx_body *= speed_scale
+                        vy_body *= speed_scale
+
+                vx_body = clamp(vx_body, -self.v_max, self.v_max)
+                vy_body = clamp(vy_body, -self.v_max, self.v_max)
+
                 motion_direction = math.atan2(vy_body, vx_body)
+                if self._is_gap_too_narrow(motion_direction):
+                    self.stop()
+                    return SkillResult(
+                        success=False,
+                        reason="obstacle_blocked",
+                        elapsed_time_s=time.monotonic() - start,
+                        position_error_m=distance_error,
+                        heading_error_rad=abs(theta_error),
+                    )
                 if self._is_direction_blocked(motion_direction):
                     self.stop()
                     return SkillResult(
