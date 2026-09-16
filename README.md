@@ -553,3 +553,10 @@ assignment/
     ├── failure_unknown_skill.jsonl
     └── failure_timeout.jsonl
 ```
+## 9.演示视频
+视频Timeline：
+0:00-0:05 预设位置的设定 
+0:05-0:45 手动使用键盘控制机器人移动 
+0:45-1:25 LLM驱动机器人执行任务。提示词为"Visit entrance, then charging_station, then storage, and stop." 
+
+视频链接：https://youtu.be/YdCoMT8qiYI
