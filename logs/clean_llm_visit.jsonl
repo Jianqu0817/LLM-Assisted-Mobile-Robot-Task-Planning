@@ -1,0 +1,9 @@
+{"timestamp": 1789526981.5407634, "event": "raw_plan", "request": "Visit storage, then charging_station, and stop.", "plan": [{"skill": "stop", "arguments": {}}]}
+{"timestamp": 1789526981.543213, "event": "validation", "ok": true, "reason": "plan_valid", "details": {"steps": 1}}
+{"timestamp": 1789526982.0595198, "event": "skill_result", "call": {"skill": "stop", "arguments": {}}, "result": {"success": true, "reason": "stopped", "elapsed_time_s": 0.5120281270001215, "position_error_m": null, "heading_error_rad": null, "last_reached_index": null, "total_waypoints": null}}
+{"timestamp": 1789526982.0613425, "event": "final_outcome", "success": true, "reason": "all_skills_completed"}
+{"timestamp": 1789527422.399302, "event": "raw_plan", "request": "Visit storage, then charging_station, and stop.", "plan": [{"skill": "follow_waypoints", "arguments": {"waypoints": [{"x": -2.152373937677039, "y": -1.363206790893182, "theta": 0}, {"x": -2.17, "y": 1.95, "theta": 0}]}}, {"skill": "stop", "arguments": {}}]}
+{"timestamp": 1789527422.402523, "event": "validation", "ok": true, "reason": "plan_valid", "details": {"steps": 2}}
+{"timestamp": 1789527432.0982692, "event": "skill_result", "call": {"skill": "follow_waypoints", "arguments": {"waypoints": [{"x": -2.152373937677039, "y": -1.363206790893182, "theta": 0}, {"x": -2.17, "y": 1.95, "theta": 0}]}}, "result": {"success": true, "reason": "all_waypoints_reached", "elapsed_time_s": 9.69131809199962, "position_error_m": null, "heading_error_rad": null, "last_reached_index": 1, "total_waypoints": 2}}
+{"timestamp": 1789527432.6348374, "event": "skill_result", "call": {"skill": "stop", "arguments": {}}, "result": {"success": true, "reason": "stopped", "elapsed_time_s": 0.5346616359997824, "position_error_m": null, "heading_error_rad": null, "last_reached_index": null, "total_waypoints": null}}
+{"timestamp": 1789527432.6371908, "event": "final_outcome", "success": true, "reason": "all_skills_completed"}

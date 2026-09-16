@@ -1,382 +1,310 @@
-\documentclass[10pt,twocolumn]{article}
-\usepackage[margin=0.72in]{geometry}
+\documentclass[10pt,twocolumn]{ctexart}
+\usepackage[margin=0.7in]{geometry}
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{amsmath}
-\usepackage{amssymb}
 \usepackage{hyperref}
 \usepackage{xcolor}
 \usepackage{listings}
 \usepackage{caption}
 \captionsetup{font=small,labelfont=bf}
-\lstset{
-  basicstyle=\ttfamily\footnotesize,
-  breaklines=true,
-  frame=single,
-  columns=fullflexible
-}
-\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue,citecolor=blue}
+\lstset{basicstyle=\ttfamily\footnotesize,breaklines=true,frame=single}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+\setCJKmainfont{SimSun}[AutoFakeBold=2.5]
+\setCJKsansfont{Microsoft YaHei}[AutoFakeBold=2.5]
+\setCJKmonofont{Microsoft YaHei}
 
-\title{\vspace{-1.2em}LLM-Assisted Mobile Robot Task Planning with a Validated Skill Interface and Execution Feedback}
-\author{Candidate\small Interview Assignment}
+\title{\vspace{-1.2em}基于执行反馈的 LLM 辅助移动机器人任务规划}
+\author{候选人\small 面试作业}
 \date{\vspace{-0.8em}}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-This report presents a single mobile-robot system that converts natural-language
-instructions into a small, validated sequence of high-level robot skills. The
-system runs ROS~2 Humble and Webots~R2025a inside WSL2 on a Windows host.
-A task-level planner selects only from a fixed allowlist of three skills; a
-multi-layer validator checks every proposed call before execution; and a
-bounded recovery module observes each structured result and decides between
-retry, obstacle recovery, one-shot LLM replanning with execution feedback, and
-safe stop-and-report. Experiments show successful pose reaching with a
-position error of 0.049\,m, multi-waypoint execution, safe rejection of
-invalid and unknown-skill plans, and a closed-loop replanning trace in which
-the LLM receives the observed timeout and produces a new validated plan.
+本文实现了一个运行于 Webots R2025a 与 ROS~2 Humble 的移动机器人任务规划系统。
+系统将自然语言请求转换为少量、经过验证的高层技能调用，并遵循
+Plan $\rightarrow$ Validate $\rightarrow$ Execute $\rightarrow$ Observe $\rightarrow$ Recover 闭环。
+LLM 只能在固定白名单中选择技能；验证器在执行前检查每个调用；执行后系统读取结构化结果，
+并在超时、障碍、窄缝等失败场景下进行有界恢复，必要时把任务级执行反馈发回 LLM 重规划。
+我们在实现过程中逐渐认识到：LLM 系统的可靠性来自可验证的架构、结构化的执行反馈，
+以及与实际仿真模型匹配的控制参数，而不是某一段提示词。
+正常与可恢复任务 5/5 成功，2 个非法计划全部在执行前被拒绝，2 个不可恢复失败（超时、持续障碍）均安全停车；成功任务平均耗时 8.65\,s，可测得的最终位置误差平均约 0.081\,m。
 \end{abstract}
 
-\section{Introduction}
+\section{任务定义与设计目标}
 \label{sec:intro}
-Large language models (LLMs) can translate natural language into structured
-tool calls, but directly executing their output on a robot is unsafe. The
-assignment requires that an LLM may \emph{select} existing high-level skills
-but must never issue velocity commands or execute generated code. The design
-goals are reliability, explicit skill contracts, strict validation, and
-reproducible experiments.
 
-The proposed system follows the loop
-\texttt{Plan} $\rightarrow$ \texttt{Validate} $\rightarrow$
-\texttt{Execute} $\rightarrow$ \texttt{Observe} $\rightarrow$
-\texttt{Recover}. The main contributions are:
+目标是让用户通过自然语言指令，例如
+``Go to storage, then workbench, and stop''
+（storage、workbench 等地点是提前在房间内指定的位置），驱动 Agent 完成任务。
+为了保证安全性和可控性，系统要求 LLM 只在任务层规划：它从固定白名单中选择并组合高层技能，
+任何调用在执行前必须经过验证器，实际运动由经过测试的 ROS~2 技能层完成；
+执行失败后系统根据结构化结果进行有界恢复。这样既能利用 LLM 的语言理解能力，
+又避免 LLM 直接控制机器人带来的风险。
+
+设计目标可以概括为四点：
 \begin{itemize}
-  \item a validated skill interface with a fixed allowlist and JSON Schema
-        contracts;
-  \item a ROS~2 implementation of \texttt{navigate\_to},
-        \texttt{follow\_waypoints}, and \texttt{stop};
-  \item a closed-loop task agent (\texttt{TaskAgent}) that centralizes
-        planning, validation, execution, observation, and recovery;
-  \item a mock planner and an optional OpenAI-compatible LLM planner that can
-        consume structured execution feedback for bounded replanning;
-  \item bounded recovery for invalid locations, unknown skills, timeouts, and
-        blocked obstacles;
-  \item a reproducible WSL2/Webots setup with JSONL execution logs.
+  \item \textbf{自主性}：用户无需写代码或手动操作，只需自然语言指令；
+  \item \textbf{安全性}：白名单、验证器、有界恢复、安全停车；
+  \item \textbf{可控性}：每个失败都有明确的恢复动作和次数上限；
+  \item \textbf{可复现性}：环境、地图、日志、实验命令完整记录。
 \end{itemize}
 
-\section{System Architecture}
+项目推进过程中，我们不断修正对“可靠性”的理解：一开始以为只要提示词足够严格，
+LLM 就会给出安全计划；后来发现仅靠提示词无法约束未知技能、越界坐标和控制误差，
+于是逐步把安全责任从模型行为转移到可检查的架构组件上。
+这一认识贯穿后文所有设计。
+
+\section{系统架构与技能接口}
 \label{sec:arch}
-Figure~\ref{fig:arch} shows the architecture. The planner produces a raw plan
-(\texttt{SkillCall[]}). The validator checks the plan before any robot action.
-Only validated calls reach the skill executor, which invokes the
-\texttt{RobotSkills} ROS~2 node. The node publishes velocity commands and reads
-position/heading/scan feedback from Webots. Every skill returns a structured
-\texttt{SkillResult}; on failure, the recovery module decides whether to retry,
-back up and retry, replan with \texttt{ExecutionFeedback}, or stop and report.
-All events are appended to a JSONL log.
+
+\subsection{整体架构}
+系统由四层组成：Planner、Validator、Skill Executor、ROS~2 技能层，
+执行结果再进入 Recovery。图~\ref{fig:arch} 给出闭环结构。
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\linewidth]{figures/architecture_feedback.png}
-  \caption{Closed-loop system architecture. The dashed edge is the execution
-  feedback channel used by the LLM planner for bounded replanning.}
+  \caption{Plan--Validate--Execute--Observe--Recover 闭环。}
   \label{fig:arch}
 \end{figure}
 
-\subsection{Modules}
-The repository separates the task-level agent from the ROS~2 skill layer:
 \begin{itemize}
-  \item \texttt{agent/task\_agent.py}: owns the Plan--Validate--Execute--
-        Observe--Recover loop;
-  \item \texttt{agent/planner.py}: mock planner and optional LLM planner;
-  \item \texttt{agent/registry.py}: machine-readable skill registry;
-  \item \texttt{agent/validator.py}: six-layer validation;
-  \item \texttt{agent/executor.py}: fixed dispatch to the three skills;
-  \item \texttt{agent/recovery.py}: bounded recovery decisions;
-  \item \texttt{agent/models.py}: \texttt{SkillCall},
-        \texttt{SkillResult}, \texttt{ValidationResult}, and
-        \texttt{ExecutionFeedback};
-  \item \texttt{agent/logger.py}: JSONL event logging;
-  \item \texttt{robot\_skills/skills.py}: ROS~2 implementation of the skills.
+  \item \textbf{Planner}：模拟规划器或兼容的 LLM 规划器，输出原始 \texttt{SkillCall[]}；
+  \item \textbf{Validator}：六层检查，不通过则计划不会到达机器人；
+  \item \textbf{Skill Executor}：只把白名单技能名映射到预定义 Python 方法；
+  \item \textbf{RobotSkills}：ROS~2 节点，发布 \texttt{/agent0/cmd\_vel}，读取 GPS、罗盘与 \texttt{/scan}；
+  \item \textbf{Recovery}：根据 \texttt{SkillResult} 选择 retry / backup / replan / stop。
 \end{itemize}
 
-\subsection{Skill interface}
-Table~\ref{tab:skills} summarises the three skills. The registry is the single
-source of truth: it generates both the JSON Schema used by the validator and
-the tool list exposed to the LLM.
+这种分层的意义在于：LLM 可以出错，但只要它无法绕过 Validator，
+最坏情况也只是计划被拒绝，而不是机器人收到危险指令。
+我们没有把安全寄希望于提示词，而是把安全放在 LLM 与执行器之间。
+
+\subsection{技能接口}
+表~\ref{tab:skills} 给出三个技能的契约。注册表是单一事实来源：
+同一份定义既生成验证器使用的 JSON Schema，也生成 LLM 工具列表，
+避免接口定义与实际执行漂移。
 
 \begin{table}[t]
 \centering
-\caption{Skill interface summary.}
+\caption{技能接口摘要。}
 \label{tab:skills}
 \small
 \begin{tabular}{p{0.22\linewidth}p{0.68\linewidth}}
 \toprule
-Skill & Contract \\
+技能 & 契约 \\
 \midrule
 \texttt{navigate\_to} &
-params: $x,y,\theta$; success: position $\le 0.05$\,m and heading
-$\le 0.10$\,rad; timeout: 30\,s \\
+参数：$x,y,\theta$；成功：位置误差 $\le 0.10$\,m，航向误差 $\le 0.15$\,rad；超时：30\,s \\
 \texttt{follow\_waypoints} &
-params: a list of waypoints; on failure returns the last reached index;
-timeout: 30\,s per waypoint \\
+参数：航点列表；失败时返回最后到达的航点下标；每个航点超时 30\,s \\
 \texttt{stop} &
-publishes zero velocity; success: zero command published; timeout: 2\,s \\
+发布零速度；成功：已发布零速度；超时：2\,s \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\section{Implementation}
+设计技能接口时，我们刻意避免“返回一个 bool 就结束”。
+每个技能都返回 \texttt{success}、\texttt{reason} 和 \texttt{elapsed\_time\_s}，
+因为上层恢复策略需要知道失败原因，而不仅是失败事实。
+这一决定是后续执行反馈与有界重规划能够成立的前提。
+
+\subsection{具名地点与工作空间}
+当前具名地点：entrance $(0.0,3.0)$、storage $(-2.152,-1.363)$、
+workbench $(4.8,0.0)$、charging\_station $(-2.17,1.95)$。
+工作空间为 $x \in [-7,7]$、$y \in [-4,7]$。
+以上坐标与 \texttt{agent/locations.py} 中的常量表一致；提示词、验证器工作空间和具名地点均由同一份定义生成，避免接口漂移。开发过程中曾发现提示词把边界硬编码为 $[-1.5,1.5]^2$，与真实边界不一致，导致真实 LLM 返回空计划；修正后单点与多航点任务均可完成。
+
+\section{实现细节}
 \label{sec:impl}
 
-\subsection{ROS~2 skill layer}
-The \texttt{RobotSkills} node subscribes to \texttt{/agent0/gps}
-(\texttt{PointStamped}) for position and to \texttt{/agent0/compass/bearing}
-(\texttt{FloatStamped}) for heading. It publishes \texttt{Twist} messages on
-\texttt{/agent0/cmd\_vel}. The Webots compass bearing is clockwise-positive,
-while ROS yaw is counter-clockwise-positive, so the node computes
+\subsection{导航与控制}
+底盘为全向 RoboMaster，可以同时平移和旋转。罗盘方位角以顺时针为正，
+ROS 偏航角以逆时针为正，因此使用
+$\psi = \mathrm{normalize}(-\mathrm{radians}(\mathrm{bearing}))$ 转换。
+位置和航向分别使用三组 PID：
+
 \begin{equation}
-  \psi = \mathrm{normalize}(-\mathrm{radians}(\mathrm{bearing})).
+  v_x^{w} = \mathrm{clamp}(k_p e_x + k_i \!\!\int\! e_x dt + k_d \dot{e}_x, -v_{max}, v_{max})
+\end{equation}
+\begin{equation}
+  v_y^{w} = \mathrm{clamp}(k_p e_y + k_i \!\!\int\! e_y dt + k_d \dot{e}_y, -v_{max}, v_{max})
+\end{equation}
+\begin{equation}
+  \omega = \mathrm{clamp}(k_p^\theta e_\theta + k_i^\theta \!\!\int\! e_\theta dt + k_d^\theta \dot{e}_\theta, -\omega_{max}, \omega_{max})
 \end{equation}
 
-\subsection{Holonomic \texttt{navigate\_to} with PID}
-The RoboMaster base is holonomic. Rather than rotating first and then driving,
-the controller translates directly in the body frame and only rotates in place
-for the final heading:
-\begin{align}
-  e_x &= x_d - x, \qquad e_y = y_d - y, \\
-  v_x^{w} &= \mathrm{clamp}\big(k_p e_x + k_i \textstyle\int e_x dt + k_d \tfrac{d e_x}{dt}, -v_{\max}, v_{\max}\big), \\
-  v_y^{w} &= \mathrm{clamp}\big(k_p e_y + k_i \textstyle\int e_y dt + k_d \tfrac{d e_y}{dt}, -v_{\max}, v_{\max}\big), \\
-  v_x^{b} &= \cos\psi\, v_x^{w} + \sin\psi\, v_y^{w}, \\
-  v_y^{b} &= -\sin\psi\, v_x^{w} + \cos\psi\, v_y^{w}.
-\end{align}
-When the position error is above tolerance, the node commands
-$(v_x^{b}, v_y^{b}, 0)$; otherwise it commands $(0,0,\omega)$ with
-$\omega = \mathrm{clamp}\big(k_p^\theta e_\theta + k_i^\theta \textstyle\int e_\theta dt + k_d^\theta \tfrac{d e_\theta}{dt}, -\omega_{\max}, \omega_{\max}\big)$.
-Success requires
-\begin{equation}
-  \sqrt{e_x^2+e_y^2} \le 0.05\,\mathrm{m}
-  \quad\text{and}\quad |e_\theta| \le 0.10\,\mathrm{rad}.
-\end{equation}
-On timeout the node stops the robot and returns
-\texttt{success=false, reason="timeout"}.
+再把世界系速度旋转到车体系：
+$v_x^b = \cos\psi\,v_x^w + \sin\psi\,v_y^w$，
+$v_y^b = -\sin\psi\,v_x^w + \cos\psi\,v_y^w$。
+当前参数：$v_{max}=2.25$\,m/s，$\omega_{max}=6.0$\,rad/s。
+PID 参数为 $k_v=4.0$、$k_{i,v}=0.6$、$k_{d,v}=0.1$，$k_\theta=5.0$、$k_{i,\theta}=0.5$、$k_{d,\theta}=0.05$，积分限幅 0.5，控制频率 20\,Hz。开环标定显示：\texttt{linear.x=1.0} 约对应 0.10\,m/s，\texttt{linear.y=1.0} 约对应 0.11\,m/s，\texttt{angular.z=5.0} 约对应 1.11\,rad/s。参考控制器使用的轮半径 0.26\,m 与 URDF 的 0.06\,m 不一致，因此技能层使用闭环 PID 反馈，而不是按开环时间估算位移；闭环后单点任务最终位置误差约为 0.08\,m。
 
-\subsection{\texttt{follow\_waypoints} and \texttt{stop}}
-\texttt{follow\_waypoints} calls \texttt{navigate\_to} sequentially and tracks
-\texttt{last\_reached\_index}. If a waypoint fails, it stops and returns that
-index. \texttt{stop} publishes zero velocity and returns a structured result.
+这部分经历了两次明显修正。最初使用纯比例控制，发现到达精度受稳态误差影响；
+改为 PID 并加入积分限幅后，精度明显改善。随后在调试速度时发现参考控制器的轮半径常量
+与 URDF 不一致，导致指令速度与实际速度之间关系异常；修正该常量并重新标定后，
+控制行为才与预期一致。由此得到的经验是：\textbf{仿真中的小常量会直接影响控制效果，
+调参前应先确认模型本身是否正确。}
 
-\subsection{Obstacle safety layer}
-\texttt{navigate\_to} also subscribes to \texttt{/scan}. Before publishing a
-translation command, it checks the minimum valid range inside a 30-degree cone
-around the intended body-frame motion direction. If that distance is at most
-0.35\,m, the skill stops and returns
-\texttt{success=false, reason="obstacle\_blocked"}. The task-level recovery
-then backs up, rotates, and retries once.
-
-\subsection{Closed-loop task agent}
-\texttt{TaskAgent} owns the execution loop. It first asks the planner for a
-plan and logs the raw plan. The validator checks the plan and rejects it
-before any motion if it is invalid. For each validated call, the executor
-invokes the corresponding skill and logs the observed \texttt{SkillResult}.
-Successful calls are recorded and execution continues. For a failure, the
-\texttt{RecoveryManager} chooses a bounded action:
+\subsection{地图与 A* 导航}
+地图有两条生成路径：
 \begin{itemize}
-  \item \texttt{retry}: re-run the same call once after a timeout;
-  \item \texttt{backup\_and\_retry}: back up, rotate, and re-run the call once
-        after an obstacle-blocked result;
-  \item \texttt{replan}: send \texttt{ExecutionFeedback} to the LLM planner and
-        request a new plan (only when the planner supports feedback and the
-        replan budget remains);
-  \item \texttt{stop\_and\_report}: stop the robot and return the failure.
+  \item \textbf{激光扫描建图}：用 GPS、罗盘和 \texttt{/scan} 增量建图；
+  \item \textbf{Supervisor 精确建图（默认）}：由 Webots Supervisor 读取场景物体的真实位置、尺寸和旋转，离线生成 PGM/YAML。
 \end{itemize}
-A replanned plan is validated from scratch before any robot motion. If the
-planner returns the same plan, the agent stops safely instead of looping. The
-number of replans is bounded by \texttt{--max-replans} (default~1).
+A* 在可通行格上规划，并做三点改进：
+\begin{enumerate}
+  \item 对离墙近的格子增加代价，使路径偏向通道中间；
+  \item 离障碍物小于 0.15\,m 的格子视为不可通行，避免钻入窄缝；
+  \item 路径直线简化时同样要求最小离障距离。
+\end{enumerate}
+Supervisor 地图为 800$\times$640 栅格、分辨率 0.02\,m/cell、原点 $[-8,-4]$，覆盖 16.0\,m$\times$12.8\,m，房间自由区域约 61.0\,m$^2$（未知区域主要是房间外）。早期激光增量地图为 200$\times$200、分辨率 0.02\,m/cell、原点 $[-2,-2]$，未知率约 57\%，storage 与 workbench 已在图外，A* 无法给出到这些点的路径。在 Supervisor 地图上，以不启用离墙代价与最小离障距离为基线，改进 A* 在 storage$\rightarrow$workbench、entrance$\rightarrow$workbench、entrance$\rightarrow$storage 三条路线上路径长度平均增加约 4.6\%（如 8.49\,m$\rightarrow$9.04\,m），但最小离障距离从约 0.02\,m 提高到约 0.25--0.30\,m；其中 entrance$\rightarrow$storage 长度不变，最小离障距离从 0.028\,m 提高到 0.300\,m。
 
-\subsection{Validation layers}
-The validator applies six layers: plan length, fixed allowlist, JSON Schema,
-workspace bounds, preconditions, and retry/replan limits. The allowable
-workspace is $x,y \in [-1.5,1.5]$\,m. Table~\ref{tab:validation} lists the
-layers and the corresponding failure reasons.
+建图方法的演化本身说明了“数据源决定算法上限”。激光扫描受机器人轨迹限制，
+覆盖不全时 A* 只能在残缺地图上规划；改用手动巡逻又容易被障碍卡住。
+最终改用 Supervisor 直接读取物体几何，几秒内得到全房间地图，
+A* 才真正发挥出作用。这让我们意识到：\textbf{与其反复调整规划器参数，
+不如先解决地图质量这一上游问题。}
 
-\begin{table}[t]
-\centering
-\caption{Validator layers and produced reasons.}
-\label{tab:validation}
-\small
-\begin{tabular}{p{0.40\linewidth}p{0.52\linewidth}}
-\toprule
-Layer & Failure reason \\
-\midrule
-Plan length & \texttt{too\_many\_steps} \\
-Allowlist & \texttt{unknown\_skill} \\
-JSON Schema & \texttt{schema\_invalid} \\
-Workspace bounds & \texttt{target\_out\_of\_workspace} \\
-Preconditions & \texttt{precondition\_failed} \\
-Retry/replan limit & \texttt{stop\_and\_report} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\subsection{局部安全：障碍、窄缝与贴墙}
+除全局 A* 外，技能层在控制周期内执行局部保护：
+\begin{itemize}
+  \item \textbf{前方障碍}：运动方向锥形区域内最近距离小于 0.15\,m 时停车；
+  \item \textbf{窄缝检测}：估算前方自由缝隙宽度，小于 0.45\,m 时停车；
+  \item \textbf{侧向排斥}：左右间隙小于 0.30\,m 时产生横向排斥速度；
+  \item \textbf{窄道减速}：左右间隙越窄，速度越低，最低为原速度的 25\%。
+\end{itemize}
 
-\section{Experiments and Results}
+这些参数不是一次性确定的。障碍膨胀太大会堵死通道，太小会贴墙；
+窄缝检测太敏感会误停车，太宽松会卡住。最终采用“离墙代价 + 最小离障距离
++ 窄缝检测 + 侧向排斥 + 窄道减速”的组合策略。
+经验是：\textbf{安全参数不是越大越好，必须在具体场景中权衡并实测。}
+
+\subsection{LLM 工具调用与验证}
+LLM 只接收四类信息：系统提示词、具名地点、工作空间边界、由注册表生成的工具定义。
+系统提示词明确要求只选择白名单技能，禁止生成代码或 shell 命令。
+如果未配置 API key 或 API 调用失败，系统回退到确定性的模拟规划器，保证其余部分可测试。
+真实 LLM 通过 OpenAI 兼容接口调用：
+\texttt{OPENAI\_BASE\_URL=https://yinli.one/v1}，
+\texttt{OPENAI\_MODEL=gpt-5.5}，使用 function calling 返回工具调用；
+API key 只保存在被 gitignore 的 \texttt{.env} 中。系统提示词由代码动态生成，
+核心摘录如下：
+\begin{lstlisting}
+You are a robot task planner. Select only from the provided skills.
+Do not generate code or shell commands.
+Available named locations:
+- entrance: x=0.0, y=3.0, theta=0.0
+- storage: x=-2.152, y=-1.363, theta=0.0
+...
+Workspace bounds: x in [-7.0, 7.0], y in [-4.0, 7.0].
+Use navigate_to for a single target pose and follow_waypoints for an
+ordered list of targets. If the user explicitly asks to stop, include a
+stop tool call after the movement tools.
+\end{lstlisting}
+这里也遇到一个典型问题：早期提示词把工作空间硬编码为 $[-1.5,1.5]^2$，
+与 \texttt{locations.py} 的真实边界不一致，真实 LLM 在部分请求下返回空计划。
+改为从统一的常量表生成提示词与验证器边界后，单点与多航点任务均可成功完成。
+这说明提示词、工具 Schema 与验证器必须共享同一份事实来源。
+
+验证器包含六层：计划长度、固定白名单、JSON Schema、工作空间、前置条件、重试/重规划限制。
+执行器只把三个技能名映射到 Python 方法，不存在 LLM 生成代码的执行路径。
+回头来看，这套验证器比任何提示词工程都更关键：\textbf{对 LLM 系统而言，
+安全必须由可验证的架构保证，而不是靠模型自觉。}
+
+\subsection{执行反馈与有界恢复}
+每个技能返回 \texttt{SkillResult}，至少包含 \texttt{success}、\texttt{reason}、\texttt{elapsed\_time\_s}。
+失败后 Recovery 根据原因选择：
+\begin{itemize}
+  \item \texttt{retry}：超时后重试一次；
+  \item \texttt{backup\_and\_retry}：障碍阻塞时后退、旋转并重试一次；
+  \item \texttt{replan}：重试预算耗尽后，把任务级 \texttt{ExecutionFeedback} 发回 LLM；
+  \item \texttt{stop\_and\_report}：达到恢复上限后停车并报告失败。
+\end{itemize}
+\texttt{ExecutionFeedback} 不包含原始激光或 GPS 数据，只包含原始请求、失败调用、
+结构化结果、尝试次数、恢复消息与已完成工作。\texttt{--max-retries} 与
+\texttt{--max-replans} 保证恢复有界。
+
+实现这一部分时我们意识到：\textbf{执行反馈的价值取决于它的结构。}
+如果只告诉 LLM “失败了”，它无法区分超时、障碍和越界；
+如果给 LLM 原始传感器数据，又会引入新的不确定性和安全隐患。
+因此我们选择只传递任务级、结构化、有界的信息，让重规划发生在可控范围内。
+
+\section{实验与结果}
 \label{sec:exp}
 
-\subsection{Platform}
-Experiments were run on Windows~11 with WSL2 Ubuntu~22.04, ROS~2 Humble, and
-Webots~R2025a. The GPU is an AMD Radeon RX~9070~XT (16\,GB). WSLg exposes a
-hardware-accelerated OpenGL~4.2 context backed by the Mesa D3D12 driver:
-\texttt{glxinfo} reports renderer \texttt{D3D12 (AMD Radeon RX 9070 XT)} and
-\texttt{Accelerated: yes}; \texttt{glxgears} reaches approximately 140\,FPS.
-
-\subsection{Task-level regression}
-Table~\ref{tab:results} reports the full regression after the closed-loop
-refactor. The success case reaches storage with a position error of
-0.0494\,m. The multi-waypoint case reaches both waypoints and reports
-\texttt{last\_reached\_index=1}. The invalid location is rejected at the
-workspace layer for the mock planner; for the real LLM, the model returns an
-empty tool list, which the validator rejects before execution. The unknown
-skill is rejected at the allowlist layer. The forced timeout is retried once
-and then safely stopped and reported. The obstacle-recovery case succeeds after
-one back-up-and-rotate retry, while the persistent-obstacle case stops and
-reports the target as blocked. The optional cloud LLM planner was tested with
-an OpenAI-compatible endpoint and model gpt-5.5; it produced correct
-\texttt{navigate\_to} and \texttt{follow\_waypoints} plus \texttt{stop} plans.
-
-The key new result is R12. The LLM first plans to the charging station. After
-two forced timeout observations, the recovery layer sends the structured
-\texttt{ExecutionFeedback} back to the LLM. The LLM returns a new validated
-plan that navigates to storage instead; the new plan is executed and, because
-the timeout is still forced to one second, it is safely stopped and reported.
-The JSONL trace therefore contains the full sequence
-\texttt{raw\_plan} $\rightarrow$ \texttt{skill\_result} $\rightarrow$
-\texttt{recovery\_decision} $\rightarrow$ \texttt{feedback\_to\_planner}
-$\rightarrow$ \texttt{replanned\_plan} $\rightarrow$
-\texttt{validation} $\rightarrow$ \texttt{skill\_result} $\rightarrow$
-\texttt{final\_outcome}.
-
-\begin{table*}[t]
-\centering
-\caption{Task-level regression results with the closed-loop agent.}
-\label{tab:results}
-\small
-\begin{tabular}{llcccl}
-\toprule
-ID & Instruction & Planner / mode & Outcome & Skill calls & Recovery \\
-\midrule
-R1 & Go to storage. & mock / direct & success, 18.58\,s, 0.0494\,m & 1 & none \\
-R2 & Visit storage, then workbench, and stop. & mock / direct & success, 38.27\,s & 2 & none \\
-R3 & Go to storage. & mock / map (A*) & success, 17.73\,s, \texttt{map\_reached} & 1 & none \\
-R4 & Go to space\_station. & mock & rejected & 0 & abort, \texttt{target\_out\_of\_workspace} \\
-R5 & Go to entrance and fly. & mock & rejected & 0 & abort, \texttt{unknown\_skill} \\
-R6 & Go to charging\_station, forced 1\,s timeout & mock / direct & failed & 2 & retry once, stop and report \\
-R7 & Go to storage, obstacle then removed & mock / direct & success, 0.0500\,m & 2 & back up, rotate, retry once \\
-R8 & Go to storage, obstacle remains & mock / direct & failed & 2 & back up, rotate, stop and report \\
-R9 & Go to storage. & real LLM / direct & success, 16.43\,s, 0.0499\,m & 1 & none \\
-R10 & Visit storage, then workbench, and stop. & real LLM / direct & success, 38.70\,s & 2 & none \\
-R11 & Go to space\_station. & real LLM & rejected & 0 & LLM empty plan, abort \\
-R12 & Go to charging\_station, forced 1\,s timeout & real LLM / direct & failed & 4 & retry, \textbf{replan with feedback}, retry, stop \\
-\bottomrule
-\end{tabular}
-\end{table*}
-
-\subsection{Manual control and calibration}
-Table~\ref{tab:calib} shows the observed response of the reference
-\texttt{wheels\_controller}. The controller uses an incorrect wheel-radius
-constant (0.26 instead of the URDF value 0.06), so the skill layer uses
-closed-loop feedback rather than open-loop timing.
+实验平台为 Windows 11 + WSL2 Ubuntu 22.04、ROS~2 Humble、Webots R2025a、
+Python 3.10.12，GPU 为 AMD Radeon RX 9070 XT。
+表~\ref{tab:results} 汇总关键指标，详细结果见下文。
 
 \begin{table}[t]
 \centering
-\caption{Observed command response.}
-\label{tab:calib}
-\small
-\begin{tabular}{lcc}
+\caption{关键指标汇总。}
+\label{tab:results}
+\scriptsize
+\begin{tabular}{ll}
 \toprule
-Command & Observed motion & Approx. response \\
+指标 & 结果 \\
 \midrule
-\texttt{linear.x = 1.0} & 0.20\,m in 2\,s & 0.10\,m/s \\
-\texttt{linear.y = 1.0} & 0.22\,m in 2\,s & 0.11\,m/s \\
-\texttt{angular.z = 5.0} & 127$^\circ$ in 2\,s & 1.11\,rad/s \\
+正常/可恢复任务 & 5/5 成功 \\
+非法/未知计划 & 2/2 执行前拒绝 \\
+不可恢复失败 & 2/2 安全停车 \\
+成功任务平均耗时 & 8.65\,s \\
+可测平均位置误差 & 0.081\,m \\
+真实 LLM 单点/多航点 & 4.25\,s / 10.23\,s \\
+LLM 反馈重规划 & 链路跑通（A11） \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\section{Discussion}
+\begin{itemize}
+  \item A1/A2：正常单点/多航点导航成功，5.73\,s 与 16.44\,s；
+  \item A3/A4：space\_station 与 fly\_to 在执行前被验证器拒绝；
+  \item A5/A7：1\,s 超时和持续障碍分别在 3.66\,s、3.35\,s 内安全停车；
+  \item A6：障碍消失后 backup+retry，6.57\,s 到达，误差 0.082\,m；
+  \item A8/A9：真实 LLM 单点与多航点成功，4.25\,s、10.23\,s，误差 0.080\,m；
+  \item A10：合成 6$^\circ$ 自由扇区估计缝宽 0.03\,m 并触发停车，40$^\circ$ 扇区不误停；
+  \item A11：超时后 LLM 收到 \texttt{ExecutionFeedback} 并改去 entrance，新计划通过验证后执行；受 1\,s 超时限制最终安全停车，反馈闭环已跑通。
+\end{itemize}
+
+实验说明：正常与可恢复任务 5/5 成功，非法/未知计划 2/2 在执行前拒绝，不可恢复超时/持续障碍 2/2 安全停车。窄缝 A10 目前是合成扫描单元测试；受房间几何限制，还缺少真实窄缝中的长距离通行验证。
+
+\section{局限与下一步}
 \label{sec:discussion}
 
-\subsection{Safety}
-The LLM never receives direct actuation authority. It can only select from
-three allowlisted skills, and every proposed call passes through the validator
-before execution. The executor maps skill names to Python methods with
-predefined signatures; no generated Python, shell, or ROS command is executed.
-Targets outside the workspace, unknown skills, malformed arguments, plans that
-exceed the step limit, and empty plans are rejected. A timeout or blocked
-obstacle always ends with a zero velocity command and a structured failure
-report.
+现有系统仍有几处局限。首先，WSLg 渲染存在额外开销，影响演示流畅度。
+其次，参考环境没有 \texttt{/agent0/odom}，位置和航向只能依赖 GPS 与罗盘，
+这限制了更精细的运动估计。第三，参考控制器轮半径常量与 URDF 不一致，
+我们通过修正常量来规避，但这类外部依赖仍是潜在风险。
+最后，Supervisor 地图虽然比扫描地图完整，但对个别复杂物体仍采用近似尺寸。真实 LLM 的延迟和输出稳定性也是外部变量：一次重规划调用可能耗时数十秒，并曾因提示词与工作空间不一致而返回空计划。
 
-\subsection{Execution feedback}
-The refactored agent makes execution feedback explicit and bounded. The LLM
-sees only task-level information: the original request, the failed call, the
-structured result, the attempted recovery message, and already completed work.
-It never sees raw sensor data. The feedback path is rule-triggered, so the
-system remains deterministic and testable with a mock planner while still
-supporting a real LLM comparison.
+下一步工作会沿着“让系统更可靠”展开：
+\begin{itemize}
+  \item 融合 SLAM 与几何地图，兼顾完整性与真实观测；
+  \item 增加动态障碍规避，处理移动物体而不仅是静态地图；
+  \item 在更多失败场景中系统评估 LLM 重规划，而不仅是 unit-level 触发；
+  \item 为 LLM 调用增加超时、缓存与空计划回退，降低外部 API 波动的影响；
+  \item 提供 Docker/WSL 一键复现环境，降低环境差异带来的风险。
+\end{itemize}
 
-\subsection{Reproducibility}
-The system is reproducible from the repository and the environment notes in
-\texttt{docs/environment.md}. The setup requires ROS~2 Humble, Webots~R2025a,
-the \texttt{webots\_ros2} 2025.0.0 packages, and the reference
-\texttt{webots\_ros2\_robomaster} world assets. The Webots asset cache and the
-reference \texttt{protos/meshes} directory are documented because they are
-large external assets. The generated JSONL logs are committed as examples.
+\section{结论}
+本文实现了一个带执行反馈的 LLM 辅助移动机器人任务规划系统，
+覆盖自然语言规划、技能接口、六层验证、PID 导航、A* 地图导航、
+局部安全保护与有界恢复。项目过程中我们逐步认识到：
+\textbf{LLM 系统的可靠性不是来自某一段提示词，而是来自可验证的架构、
+结构化的执行反馈，以及与实际仿真模型匹配的控制与地图。}
+我们把 LLM 限制在任务级规划，把安全责任交给验证器、技能层与有界恢复，
+并通过多轮问题定位与修正验证了这条路线。
 
-\subsection{Limitations}
-The final configuration runs Webots inside WSL2 through WSLg. The WSLg path has
-some D3D12 translation and Xwayland compositing overhead, so it is less
-responsive than the optional native Windows Webots mode, but it is sufficient
-for the assignment. The reference setup has no \texttt{/agent0/odom} topic;
-the skill layer therefore uses \texttt{/agent0/gps} for position and
-\texttt{/agent0/compass/bearing} for heading. The reference
-\texttt{wheels\_controller} uses an incorrect wheel radius, so closed-loop
-control is required. The current LLM replanning is one-shot and rule-triggered;
-it does not yet compare the original plan with the replanned plan beyond
-detecting identical plans.
-
-\subsection{Next steps}
-Future work includes an LLM planner that reasons over the full execution trace
-and explicit failure semantics, dynamic obstacle avoidance using
-\texttt{/scan}, a dedicated odometry topic, and a Docker/WSL one-click setup.
-
-\section{Conclusion}
-\label{sec:conclusion}
-This report described a reliable, validated LLM-assisted task-planning system
-for a simulated mobile robot. The system separates planning, validation,
-execution, observation, and recovery; enforces a strict allowlist; returns
-structured results for every skill; and closes the loop by sending bounded
-execution feedback back to the LLM planner. Experiments demonstrated successful
-pose reaching, multi-waypoint execution, map-based A* navigation, rejection of
-invalid locations and unknown skills, obstacle recovery, and a real LLM
-replanning trace after observed timeouts.
-
-\begin{thebibliography}{9}
-\bibitem{ros2}
-ROS~2 Humble documentation. \url{https://docs.ros.org/en/humble/}
-\bibitem{webots}
-Cyberbotics Webots. \url{https://cyberbotics.com/}
-\bibitem{webotsros2}
-\texttt{webots\_ros2}. \url{https://github.com/cyberbotics/webots_ros2}
-\bibitem{robomaster}
-\texttt{webots\_ros2\_robomaster}.
-\url{https://github.com/MohismLab/webots_ros2_robomaster}
-\bibitem{wslg}
-Microsoft WSLg. \url{https://github.com/microsoft/wslg}
-\bibitem{mesa}
-Mesa D3D12 driver. \url{https://docs.mesa3d.org/drivers/d3d12.html}
-\bibitem{openai}
-OpenAI-compatible function calling.
-\url{https://platform.openai.com/docs/guides/function-calling}
+\begin{thebibliography}{6}
+\bibitem{ros2} ROS~2 Humble 文档. \url{https://docs.ros.org/en/humble/}
+\bibitem{webots} Webots R2025a. \url{https://cyberbotics.com/}
+\bibitem{webotsros2} \texttt{webots\_ros2}. \url{https://github.com/cyberbotics/webots_ros2}
+\bibitem{robomaster} \texttt{webots\_ros2\_robomaster}. \url{https://github.com/MohismLab/webots_ros2_robomaster}
+\bibitem{openai} OpenAI-compatible function calling. \url{https://platform.openai.com/docs/guides/function-calling}
+\bibitem{slam} slam\_toolbox. \url{https://github.com/SteveMacenski/slam_toolbox}
 \end{thebibliography}
 
 \end{document}

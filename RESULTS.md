@@ -5,6 +5,35 @@ time, number of skill calls, and recovery actions, as required by the assignment
 
 ---
 
+## 0. 最新 clean 批次结果（2026-09-16）
+
+> 本节使用新的 Webots 世界 `/home/ubuntu/record_world_with_URDF_robot.wbt`
+> 与 Supervisor 精确地图；运行日志见 `logs/clean_*.jsonl`。
+> 下方第 1--9 节为早期英文调试记录，保留用于追溯。
+
+| 场景 | 结果 | 耗时/误差 | 日志 |
+|---|---|---|---|
+| mock map：`Go to storage.` | 成功，`map_reached` | 5.73 s | `logs/clean_success_storage.jsonl` |
+| mock map：`Visit storage, then charging_station, and stop.` | 成功，2/2 航点 | 16.44 s | `logs/clean_success_visit.jsonl` |
+| 非法地点 `space_station` | 执行前拒绝：`target_out_of_workspace` | — | `logs/clean_invalid.jsonl` |
+| 未知技能 `fly_to` | 执行前拒绝：`unknown_skill` | — | `logs/clean_unknown.jsonl` |
+| direct 1 s 超时 + 重试 | 两次超时后安全停车 | 3.66 s | `logs/clean_timeout.jsonl` |
+| 障碍出现后消失 | backup+retry 后 `reached` | 6.57 s，误差 0.082 m | `logs/clean_obstacle_recovery.jsonl` |
+| 障碍持续存在 | 两次 `obstacle_blocked` 后安全停车 | 3.35 s | `logs/obstacle_blocked_failure.jsonl` |
+| 真实 LLM 单点（direct） | 成功，`reached` | 4.25 s，误差 0.080 m | `logs/clean_llm_success.jsonl` |
+| 真实 LLM 多航点（direct） | 成功，2/2 航点 | 10.23 s | `logs/clean_llm_visit.jsonl` |
+| 合成窄缝单元测试 | 6° 自由扇区估计缝宽 0.03 m，触发停车；40° 扇区不误停 | — | `logs/narrow_gap_unit_test.txt` |
+| 超时 + LLM 反馈重规划 | LLM 收到反馈后改去 entrance，新计划通过验证并执行；因强制 1 s 超时最终安全停车 | 反馈链路跑通 | `logs/clean_llm_replan_full.jsonl` |
+
+关键结论：
+
+- 正常与可恢复任务 5/5 成功；成功任务平均耗时 8.65 s，可测平均位置误差约 0.081 m。
+- 非法/未知计划 2/2 在执行前被拒绝；不可恢复超时与持续障碍 2/2 进入安全停车。
+- 真实 LLM 的提示词边界必须与 `agent/locations.py` 使用同一常量表；早期硬编码 `[-1.5,1.5]` 会导致空计划，修正后单点/多航点均成功。
+
+
+---
+
 ## 1. Environment / OpenGL verification
 
 | Check | Result |

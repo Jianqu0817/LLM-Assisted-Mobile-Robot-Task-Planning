@@ -1,0 +1,4 @@
+{"timestamp": 1789526896.896235, "event": "raw_plan", "request": "Go to entrance and fly.", "plan": [{"skill": "fly_to", "arguments": {"x": 0.0, "y": 0.0}}]}
+{"timestamp": 1789526896.8987293, "event": "validation", "ok": false, "reason": "unknown_skill", "details": {"skill": "fly_to", "allowed": ["navigate_to", "follow_waypoints", "stop"], "call_index": 0}}
+{"timestamp": 1789526896.9037344, "event": "recovery_decision", "action": "abort", "message": "The plan contains an unknown skill and was rejected."}
+{"timestamp": 1789526896.909174, "event": "final_outcome", "success": false, "reason": "unknown_skill", "message": "The plan contains an unknown skill and was rejected."}

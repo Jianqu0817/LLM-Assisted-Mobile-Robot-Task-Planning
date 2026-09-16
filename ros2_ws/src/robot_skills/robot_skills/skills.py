@@ -620,9 +620,10 @@ class RobotSkills(Node):
                         -self.wall_repulsion_max,
                         self.wall_repulsion_max,
                     )
-                    vy_body += repulsion
+                    if distance_error > 0.25:
+                        vy_body += repulsion
 
-                    if min_side < self.wall_clearance_threshold:
+                    if distance_error > 0.25 and min_side < self.wall_clearance_threshold:
                         speed_scale = clamp(
                             min_side / self.wall_speed_clearance,
                             self.wall_min_speed_scale,
@@ -635,7 +636,7 @@ class RobotSkills(Node):
                 vy_body = clamp(vy_body, -self.v_max, self.v_max)
 
                 motion_direction = math.atan2(vy_body, vx_body)
-                if self._is_gap_too_narrow(motion_direction):
+                if distance_error > 0.25 and self._is_gap_too_narrow(motion_direction):
                     self.stop()
                     return SkillResult(
                         success=False,

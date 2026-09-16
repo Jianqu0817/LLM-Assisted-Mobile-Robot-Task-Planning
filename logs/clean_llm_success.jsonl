@@ -1,0 +1,8 @@
+{"timestamp": 1789526950.956148, "event": "raw_plan", "request": "Go to storage.", "plan": []}
+{"timestamp": 1789526950.9583514, "event": "validation", "ok": false, "reason": "empty_plan", "details": {}}
+{"timestamp": 1789526950.9643664, "event": "recovery_decision", "action": "abort", "message": "Plan rejected by validator: empty_plan"}
+{"timestamp": 1789526950.9691737, "event": "final_outcome", "success": false, "reason": "empty_plan", "message": "Plan rejected by validator: empty_plan"}
+{"timestamp": 1789527350.6072516, "event": "raw_plan", "request": "Go to storage.", "plan": [{"skill": "navigate_to", "arguments": {"x": -2.152373937677039, "y": -1.363206790893182, "theta": 0}}]}
+{"timestamp": 1789527350.609844, "event": "validation", "ok": true, "reason": "plan_valid", "details": {"steps": 1}}
+{"timestamp": 1789527354.8658988, "event": "skill_result", "call": {"skill": "navigate_to", "arguments": {"x": -2.152373937677039, "y": -1.363206790893182, "theta": 0}}, "result": {"success": true, "reason": "reached", "elapsed_time_s": 4.250897059000181, "position_error_m": 0.07979642206695681, "heading_error_rad": 0.01884320630838654, "last_reached_index": null, "total_waypoints": null}}
+{"timestamp": 1789527354.8678145, "event": "final_outcome", "success": true, "reason": "all_skills_completed"}

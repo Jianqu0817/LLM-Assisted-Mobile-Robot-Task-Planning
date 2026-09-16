@@ -138,11 +138,21 @@ class LLMPlanner:
     def _build_messages(
         self, request: str, feedback: Optional[ExecutionFeedback]
     ) -> List[dict]:
-        from .locations import LOCATIONS
+        from .locations import (
+            LOCATIONS,
+            WORKSPACE_MAX_X,
+            WORKSPACE_MAX_Y,
+            WORKSPACE_MIN_X,
+            WORKSPACE_MIN_Y,
+        )
 
         location_lines = chr(10).join(
             f"- {loc.name}: x={loc.x}, y={loc.y}, theta={loc.theta}"
             for loc in LOCATIONS.values()
+        )
+        bounds = (
+            f"x in [{WORKSPACE_MIN_X}, {WORKSPACE_MAX_X}], "
+            f"y in [{WORKSPACE_MIN_Y}, {WORKSPACE_MAX_Y}]"
         )
         system_prompt = (
             "You are a robot task planner. Select only from the provided "
@@ -152,7 +162,7 @@ class LLMPlanner:
             + chr(10)
             + location_lines
             + chr(10) + chr(10)
-            + "Workspace bounds: x and y are in [-1.5, 1.5]."
+            + f"Workspace bounds: {bounds}."
             + chr(10)
             + "Use navigate_to for a single target pose and follow_waypoints "
             + "for an ordered list of targets. If the user explicitly asks "
