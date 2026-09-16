@@ -4,7 +4,7 @@
 基于 Webots R2025a 与 ROS 2 Humble。系统将自然语言请求转换为一组少量、经过验证的高层机器人技能调用。
 大语言模型只能从固定白名单中选择技能，不能直接发布速度指令，也不能执行生成的代码。
 
-> 最新实验结果与指标见 [`RESULTS.md`](RESULTS.md) 第 0 节；完整中文技术报告见 [`report/report.pdf`](report/report.pdf)。
+> 最新实验结果与指标见 [`RESULTS.md`](RESULTS.md) 第 0 节；完整中文技术报告见 [`report.pdf`](report.pdf)。
 
 
 ---
