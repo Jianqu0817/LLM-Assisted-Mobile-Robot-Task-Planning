@@ -560,3 +560,9 @@ assignment/
 0:45-1:25 LLM驱动机器人执行任务。提示词为"Visit entrance, then charging_station, then storage, and stop." 
 
 视频链接：https://youtu.be/YdCoMT8qiYI
+
+## 10. 贡献者 / Contributors
+
+- **Jian Fangyuan（菅方源）** — GitHub: [@Jianqu0817](https://github.com/Jianqu0817)
+- **Qingbiao LI** — qingbiao.qli@gmail.com
+- **Shiyuan Yang** — shiyuanyang0628@hotmail.com
